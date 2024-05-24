@@ -1,0 +1,468 @@
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Tables:
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+CREATE TABLE Tenants(
+TenantId VARCHAR(9) NOT NULL,
+TenantName VARCHAR(128) NOT NULL, 
+EmailAdd VARCHAR(255) NOT NULL,
+ContactNum VARCHAR(100) NOT NULL,
+
+PRIMARY KEY(TenantID),
+CONSTRAINT UC_TenantId UNIQUE (TenantId)
+)
+
+
+
+CREATE TABLE StoreUnits(
+UnitId VARCHAR(9) NOT NULL,
+UnitName VARCHAR(255) NOT NULL,
+StoreType VARCHAR(128) NOT NULL, 
+UnitStatus VARCHAR(50) NOT NULL,
+UnitPrice VARCHAR(50) NOT NULL,
+
+PRIMARY KEY(UnitId),
+CONSTRAINT UC_UnitId UNIQUE (UnitId)
+)
+
+
+
+
+CREATE TABLE Rentals(
+UnitId VARCHAR(9) NOT NULL,
+TenantId VARCHAR(9) NOT NULL,
+StartDate DATE NOT NULL,
+EndDate DATE NOT NULL,
+
+FOREIGN KEY(UnitID) REFERENCES StoreUnits(UnitID),
+FOREIGN KEY(TenantID) REFERENCES Tenants(TenantID),
+
+CONSTRAINT UC_TenantId UNIQUE (TenantId),
+CONSTRAINT UC_UnitId UNIQUE (UnitId),
+CONSTRAINT StartDateLimit CHECK (StartDate <= EndDate)
+)
+
+
+
+
+CREATE TABLE Payments(
+UnitId VARCHAR(9) NOT NULL,
+TenantId VARCHAR(9) NOT NULL,
+PaymentDate DATE NOT NULL,
+PaymentType VARCHAR(128) NOT NULL,
+PaymentStatus VARCHAR(128) NOT NULL,
+
+FOREIGN KEY(UnitID) REFERENCES StoreUnits(UnitID),
+FOREIGN KEY(TenantID) REFERENCES Tenants(TenantID),
+
+CONSTRAINT UC_UnitId UNIQUE (UnitId),
+CONSTRAINT UC_TenantId UNIQUE (TenantId)
+)
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Procedures:
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+DELIMITER //
+
+CREATE PROCEDURE UpdateTenant(IN TenantId_new VARCHAR(9),
+							  IN TenantName_new VARCHAR(128),
+							  IN EmailAdd_new VARCHAR(255),
+							  IN ContactNum_new VARCHAR(100),
+							  IN TenantId_old VARCHAR(9)
+                              )
+                              
+BEGIN
+		SET FOREIGN_KEY_CHECKS=0;
+		UPDATE TENANTS
+        SET TenantId = TenantId_new,
+			TenantName = TenantName_new,
+            EmailAdd = EmailAdd_new,
+            ContactNum = ContactNum_new
+		WHERE
+			TenantId = TenantId_old;
+            
+		UPDATE PAYMENTS
+        SET TenantId = TenantId_new
+		WHERE TenantId = TenantId_old;
+        
+        UPDATE RENTALS
+        SET TenantId = TenantId_new
+		WHERE TenantId = TenantId_old;
+		SET FOREIGN_KEY_CHECKS=1;
+        
+END //
+
+DELIMITER ;
+
+
+DELIMITER //
+
+CREATE PROCEDURE UpdateUnit(IN UnitId_new VARCHAR(9),
+							IN UnitName_new VARCHAR(128),
+							IN StoreType_new VARCHAR(255),
+                            IN UnitPrice_new VARCHAR(100),
+							IN UnitId_old VARCHAR(9)
+							)
+                              
+BEGIN
+		SET FOREIGN_KEY_CHECKS=0;
+		UPDATE STOREUNITS
+        SET UnitId = UnitId_new,
+			UnitName = UnitName_new,
+            StoreType = StoreType_new,
+            #UnitStatus = UnitStatus_new,
+            UnitPrice = UnitPrice_new
+		WHERE
+			UnitId = UnitId_old;
+            
+		UPDATE PAYMENTS
+        SET UnitId = UnitId_new
+		WHERE UnitId = UnitId_old;
+        
+        UPDATE RENTALS
+        SET UnitId = UnitId_new
+		WHERE UnitId = UnitId_old;
+		SET FOREIGN_KEY_CHECKS=1;
+        
+END //
+
+DELIMITER ;
+
+
+DELIMITER //
+
+CREATE PROCEDURE DeleteTenant(IN TenantId_del VARCHAR(9))
+BEGIN 
+    -- Disable foreign key checks temporarily
+    SET FOREIGN_KEY_CHECKS = 0;
+
+    -- Delete payments related to the tenant
+    DELETE FROM PAYMENTS WHERE TenantId = TenantId_del;
+
+    -- Delete rentals related to the tenant
+    DELETE FROM RENTALS WHERE TenantId = TenantId_del;
+
+    -- Delete the tenant from the TENANTS table
+    DELETE FROM TENANTS WHERE TenantId = TenantId_del;
+
+    -- Enable foreign key checks again
+    SET FOREIGN_KEY_CHECKS = 1;
+END //
+
+DELIMITER ;
+
+
+
+DELIMITER //
+
+CREATE PROCEDURE DeleteUnit(IN UnitId_del VARCHAR(9))
+BEGIN 
+    -- Disable foreign key checks temporarily
+    SET FOREIGN_KEY_CHECKS = 0;
+	
+    
+    -- Delete tenants associated with the unit
+    DELETE T FROM TENANTS T
+    INNER JOIN RENTALS R ON T.TenantId = R.TenantId
+    WHERE R.UnitId = UnitId_del;
+    
+    -- Delete payments related to the unit
+    DELETE FROM PAYMENTS WHERE UnitId = UnitId_del;
+
+    -- Delete rentals related to the unit
+    DELETE FROM RENTALS WHERE UnitId = UnitId_del;
+
+    
+    -- Delete the unit from the STOREUNITS table
+    DELETE FROM STOREUNITS WHERE UnitId = UnitId_del;
+
+    -- Enable foreign key checks again
+    SET FOREIGN_KEY_CHECKS = 1;
+END //
+
+DELIMITER ;
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Triggers
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+DELIMITER //
+
+CREATE TRIGGER Occupied_PaymentsInsert AFTER INSERT ON PAYMENTS
+FOR EACH ROW
+
+BEGIN
+	DECLARE IsPaymentDone INT;
+    DECLARE IsRentalDone INT;
+
+	SELECT COUNT(*) INTO IsPaymentDone FROM PAYMENTS P 
+    WHERE P.UnitId = NEW.UnitId
+    #AND P.PaymentDate >= CURRENT_DATE()
+    AND P.PaymentStatus = 'Paid';
+    
+    SELECT COUNT(*) INTO IsRentalDone FROM RENTALS R 
+    WHERE R.UnitId = NEW.UnitId
+    AND R.StartDate <= CURRENT_DATE()
+    AND R.EndDate  >= CURRENT_DATE();
+	
+    
+    
+    -- CHECKER to determine the state of the Unit
+    IF IsPaymentDone > 0 XOR IsRentalDone > 0 THEN 
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Pending'
+		WHERE UnitId = NEW.UnitId;
+    
+    ELSEIF IsPaymentDone > 0 AND IsRentalDone > 0 THEN 
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Occupied'
+		WHERE UnitId = NEW.UnitId;
+        
+    ELSE
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Vacant'
+		WHERE UnitId = NEW.UnitId;
+    END IF;
+
+END//
+
+
+
+DELIMITER ;
+
+DELIMITER //
+
+CREATE TRIGGER Occupied_PaymentsDelete AFTER DELETE ON PAYMENTS
+FOR EACH ROW
+
+BEGIN
+	DECLARE IsPaymentDone INT;
+    DECLARE IsRentalDone INT;
+
+	SELECT COUNT(*) INTO IsPaymentDone FROM PAYMENTS P 
+    WHERE P.UnitId = OLD.UnitId
+    #AND P.PaymentDate >= CURRENT_DATE()
+    AND P.PaymentStatus = 'Paid';
+    
+    SELECT COUNT(*) INTO IsRentalDone FROM RENTALS R 
+    WHERE R.UnitId = OLD.UnitId
+    AND R.StartDate <= CURRENT_DATE()
+    AND R.EndDate  >= CURRENT_DATE();
+	
+    
+    
+    -- CHECKER to determine the state of the Unit
+    IF IsPaymentDone > 0 XOR IsRentalDone > 0 THEN 
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Pending'
+		WHERE UnitId = OLD.UnitId;
+    
+    ELSEIF IsPaymentDone > 0 AND IsRentalDone > 0 THEN 
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Occupied'
+		WHERE UnitId = OLD.UnitId;
+        
+    ELSE
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Vacant'
+		WHERE UnitId = OLD.UnitId;
+    END IF;
+
+END//
+
+
+
+DELIMITER ;
+
+
+
+DELIMITER //
+
+CREATE TRIGGER Occupied_PaymentsUpdate AFTER UPDATE ON PAYMENTS
+FOR EACH ROW
+
+BEGIN
+	DECLARE IsPaymentDone INT;
+    DECLARE IsRentalDone INT;
+
+	SELECT COUNT(*) INTO IsPaymentDone FROM PAYMENTS P 
+    WHERE P.UnitId = NEW.UnitId
+    #AND P.PaymentDate >= CURRENT_DATE()
+    AND P.PaymentStatus = 'Paid';
+    
+    SELECT COUNT(*) INTO IsRentalDone FROM RENTALS R 
+    WHERE R.UnitId = NEW.UnitId
+    AND R.StartDate <= CURRENT_DATE()
+    AND R.EndDate  >= CURRENT_DATE();
+	
+    
+    
+    -- CHECKER to determine the state of the Unit
+    IF IsPaymentDone > 0 XOR IsRentalDone > 0 THEN 
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Pending'
+		WHERE UnitId = NEW.UnitId;
+    
+    ELSEIF IsPaymentDone > 0 AND IsRentalDone > 0 THEN 
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Occupied'
+		WHERE UnitId = NEW.UnitId;
+        
+    ELSE
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Vacant'
+		WHERE UnitId = NEW.UnitId;
+    END IF;
+
+END//
+
+
+
+DELIMITER ;
+
+
+
+
+
+
+DELIMITER //
+
+CREATE TRIGGER Occupied_RentalsInsert AFTER INSERT ON RENTALS
+FOR EACH ROW
+
+BEGIN
+	DECLARE IsPaymentDone INT;
+    DECLARE IsRentalDone INT;
+
+	SELECT COUNT(*) INTO IsPaymentDone FROM PAYMENTS P 
+    WHERE P.UnitId = NEW.UnitId
+    #AND P.PaymentDate >= CURRENT_DATE()
+    AND P.PaymentStatus = 'Paid';
+    
+    SELECT COUNT(*) INTO IsRentalDone FROM RENTALS R 
+    WHERE R.UnitId = NEW.UnitId
+    AND R.StartDate <= CURRENT_DATE()
+    AND R.EndDate  >= CURRENT_DATE();
+	
+    
+    
+    -- CHECKER to determine the state of the Unit
+    IF IsPaymentDone > 0 XOR IsRentalDone > 0 THEN 
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Pending'
+		WHERE UnitId = NEW.UnitId;
+    
+    ELSEIF IsPaymentDone > 0 AND IsRentalDone > 0 THEN 
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Occupied'
+		WHERE UnitId = NEW.UnitId;
+        
+	#ELSEIF NEW.EndDate  <= CURRENT_DATE() THEN
+		#UPDATE STOREUNITS 
+		#SET UnitStatus = 'Vacant'
+		#WHERE UnitId = NEW.UnitId;
+        
+    ELSE
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Vacant'
+		WHERE UnitId = NEW.UnitId;
+    END IF;
+
+END//
+
+
+
+DELIMITER ;
+
+
+DELIMITER //
+
+CREATE TRIGGER Occupied_RentalsDelete AFTER DELETE ON RENTALS
+FOR EACH ROW
+
+BEGIN
+	DECLARE IsPaymentDone INT;
+    DECLARE IsRentalDone INT;
+
+	SELECT COUNT(*) INTO IsPaymentDone FROM PAYMENTS P 
+    WHERE P.UnitId = OLD.UnitId
+    #AND P.PaymentDate >= CURRENT_DATE()
+    AND P.PaymentStatus = 'Paid';
+    
+    SELECT COUNT(*) INTO IsRentalDone FROM RENTALS R 
+    WHERE R.UnitId = OLD.UnitId
+    AND R.StartDate <= CURRENT_DATE()
+    AND R.EndDate  >= CURRENT_DATE();
+	
+    
+    
+    -- CHECKER to determine the state of the Unit
+    IF IsPaymentDone > 0 XOR IsRentalDone > 0 THEN 
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Pending'
+		WHERE UnitId = OLD.UnitId;
+    
+    ELSEIF IsPaymentDone > 0 AND IsRentalDone > 0 THEN 
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Occupied'
+		WHERE UnitId = OLD.UnitId;
+        
+    ELSE
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Vacant'
+		WHERE UnitId = OLD.UnitId;
+    END IF;
+
+END//
+
+
+
+DELIMITER ;
+
+
+
+
+
+DELIMITER //
+
+CREATE TRIGGER Occupied_RentalsUpdate AFTER UPDATE ON RENTALS
+FOR EACH ROW
+
+BEGIN
+	DECLARE IsPaymentDone INT;
+    DECLARE IsRentalDone INT;
+
+	SELECT COUNT(*) INTO IsPaymentDone FROM PAYMENTS P 
+    WHERE P.UnitId = NEW.UnitId
+    #AND P.PaymentDate >= CURRENT_DATE()
+    AND P.PaymentStatus = 'Paid';
+    
+    SELECT COUNT(*) INTO IsRentalDone FROM RENTALS R 
+    WHERE R.UnitId = NEW.UnitId
+    AND R.StartDate <= CURRENT_DATE()
+    AND R.EndDate  >= CURRENT_DATE();
+	
+    
+    
+    -- CHECKER to determine the state of the Unit
+    IF IsPaymentDone > 0 XOR IsRentalDone > 0 THEN 
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Pending'
+		WHERE UnitId = NEW.UnitId;
+    
+    ELSEIF IsPaymentDone > 0 AND IsRentalDone > 0 THEN 
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Occupied'
+		WHERE UnitId = NEW.UnitId;
+        
+    ELSE
+		UPDATE STOREUNITS 
+		SET UnitStatus = 'Vacant'
+		WHERE UnitId = NEW.UnitId;
+    END IF;
+
+END//
+
+
+
+DELIMITER ;
